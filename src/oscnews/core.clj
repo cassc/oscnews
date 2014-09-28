@@ -37,6 +37,37 @@
   (and (linux?) (= 0
                    (:exit (sh "which" "calibre"))
                    (:exit (sh "which" "ebook-convert")))))
+
+
+(defn- get-status-by-exception
+  "Get http status code from an exception of client/request."
+  [e]
+  (try
+    (:status (:object (.getData e)))
+    (catch Exception f)))
+
+
+(defmacro def-httpmethod
+  [method]
+  `(defn ~method
+     ~(str "Issues an client/" method " request which is wrapped in a try-catch block."
+           "When 503 or 403 error occurs, will retry in 5 seconds")
+     ~'[url params]
+     (let [request# ~(symbol (str "client/" (clojure.string/lower-case method)))]
+       (try
+         (request# ~'url ~'params)
+       (catch Exception e#
+         (if (contains? #{503 403} (get-status-by-exception e#))
+           (do
+             (prn "Req rejected, sleep 5 secs")
+             (Thread/sleep 5000)
+             (request# ~'url ~'params))
+           (throw e#)))))))
+
+(def-httpmethod GET)
+(def-httpmethod POST)
+
+
 ;; uris
 (def osc-host
   "http://www.oschina.net")
@@ -116,7 +147,11 @@
    :user-agent "Mozilla/5.0 (X11; Linux i686; rv:30.0) Gecko/20100101 Firefox/30.0 Iceweasel/30.0"
 ;   :cookie "oscid=hAVeMWBecfqVwnPrEC5fwXtoXjWkDMgEmp%2B6EtdV18KKY22xo%2F8UT8H2m2Feqf6yXw1jGPrKEK%2BH%2BIafyB8aBA6qQNsbOU3O9pjMTEgz21LXGpAZFNnFIjTEXOJ70Zi8"
    :cookie (:cookie-store cs)
-   :conn-timeout 5000})
+   :socket-timeout 5000
+   :conn-timeout 5000
+   :retry-handler (fn [ex try-count http-context]
+                    (println "Got:" ex)
+                    (if (> try-count 2) false true))})
 
 
 (defn- get-attachement
@@ -167,7 +202,7 @@
    ))
 
 (defn get-newslist [page]
-  (let [newslist (:body (client/get (str osc-news-list page)
+  (let [newslist (:body (GET (str osc-news-list page)
                                     request-headers))
         zipbody (zip-str newslist)]
     (parse-osc-news zipbody)))
@@ -181,11 +216,9 @@
         newsdetail-url (str (get-detail-url newstype) id)
         response (:body
                   (if (= "1" newstype) ; type 2, software should be requested with post
-                    (client/post newsdetail-url (assoc request-headers :form-params {:ident id}))
-                    (client/get newsdetail-url request-headers)))]
+                    (POST newsdetail-url (assoc request-headers :form-params {:ident id}))
+                    (GET newsdetail-url request-headers)))]
     response))
-
-
 
 
 (defn get-news-detail
@@ -223,7 +256,7 @@
                       (cstr/replace comment-url "comment_list" "blogcomment_list")
                       comment-url)
         _ (prn "Req cmts:" comment-url)
-        response (:body (client/get comment-url request-headers))
+        response (:body (GET comment-url request-headers))
         zipbody (zip-str  response)
         ;; seq of comments. each comments is a vector
         comments-seq
@@ -249,7 +282,6 @@
           (partition 4 4)
           (map #(reduce merge %))))))
 
-; todo get comments only when there is comments
 (defn fetch-news-by-page
   "Get this page of news. page starts from 0"
   [page]
@@ -332,7 +364,7 @@ TODO Handle 503 or service rejected"
   ([]
      (-fetch-news-as-html 1))
   ([page]
-     (let [_ (client/get osc-host request-headers)
+     (let [_ (GET osc-host request-headers)
            newslist (fetch-news page)]
        (news-base-html newslist))))
 
@@ -343,37 +375,6 @@ Sample osc news link:
 http://www.oschina.net/news/54237/chanzhieps-2-5"
   [osclink]
   (last (re-find #"news/(\d+)/" osclink)))
-
-(defn get-rss-list
-  "Get rss as a seq of news maps.
-Each rss item has the following tags:
-(:title :link :category :description :pubDate :guid)
-"
-  []
-  (let [_ (client/get osc-host request-headers)
-        resp (client/get osc-rss request-headers)
-        _ (if (not= 200 (:status resp))
-            (prn (str "Failed to retrieve rss list, error code " (:status resp))))
-        rsslist-str (:body resp)
-        rsslist
-        (->>
-         (zip-str rsslist-str)
-         first
-         :content
-         first
-         :content)]
-    (doall
-     (for [item rsslist
-           :when (= :item (:tag item))
-           :let [cnt
-                 (reduce
-                  #(assoc % (:tag %2)
-                          (first (:content %2)))
-                  {}
-                  (:content item))]]
-       (assoc cnt :id (get-id-by-osclink (:link cnt)))))))
-
-
 
 
 (defn is-image-node?
@@ -388,7 +389,7 @@ Each rss item has the following tags:
     (if-not (.exists (io/file output))
       (let [_ (io/make-parents output)
             body (:body
-                  (client/get url (assoc request-headers :as :byte-array)))]
+                  (GET url (assoc request-headers :as :byte-array)))]
         (with-open [w (io/output-stream output)]
           (io/copy body w))))))
 
@@ -402,30 +403,6 @@ Each rss item has the following tags:
     (assoc-in node [:attrs :src] filename)))
 
 
-(defn tree-edit
-  "Take a zipper, a function that matches a pattern in the tree,
-   and a function that edits the current location in the tree.  Examine the tree
-   nodes in depth-first order, determine whether the matcher matches, and if so
-   apply the editor."
-  [zipper matcher editor]
-  (loop [loc zipper]
-    (if (zip/end? loc)
-      (zip/root loc)
-      (if-let [matcher-result (matcher loc)]
-        (let [new-loc (zip/edit loc editor)]
-          (if (not (= (zip/node new-loc) (zip/node loc)))
-            (recur (zip/next new-loc))))
-        (recur (zip/next loc))))))
-
-
-(defn fix-images-fortree
-  [news-html]
-  (let [z (hiccup-zip
-           (as-hiccup
-            (parse news-html)))]
-    (prn "Fixing images ...")
-    (html
-     (tree-edit z is-image-node? replace-image-node))))
 
 (defn fix-images
   "Get image links from raw html"
