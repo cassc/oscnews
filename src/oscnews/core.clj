@@ -147,7 +147,7 @@
    :user-agent "Mozilla/5.0 (X11; Linux i686; rv:30.0) Gecko/20100101 Firefox/30.0 Iceweasel/30.0"
 ;   :cookie "oscid=hAVeMWBecfqVwnPrEC5fwXtoXjWkDMgEmp%2B6EtdV18KKY22xo%2F8UT8H2m2Feqf6yXw1jGPrKEK%2BH%2BIafyB8aBA6qQNsbOU3O9pjMTEgz21LXGpAZFNnFIjTEXOJ70Zi8"
    :cookie (:cookie-store cs)
-   :socket-timeout 5000
+   :socket-timeout 10000
    :conn-timeout 5000
    :retry-handler (fn [ex try-count http-context]
                     (println "Got:" ex)
@@ -280,6 +280,7 @@
     (doall
      (->> comments-maps
           (partition 4 4)
+          reverse
           (map #(reduce merge %))))))
 
 (defn fetch-news-by-page
@@ -295,8 +296,8 @@
                           (try
                             (get-comments news)
                             (catch Exception e
-                              (.printStackTrace e)
-                              (Thread/sleep (* 10 1000))))
+                              (prn "Get comments failed for" id "with error" (.getMessage e))
+                              (Thread/sleep (* 2 1000))))
                           (prn (str "No comments for " id)))]]
      (assoc news :body body :comments comments))))
 
