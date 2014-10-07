@@ -6,14 +6,14 @@ Note: convertion to epub requires linux os and Calibre/bin in PATH.
 
 ## Usage
 
-Run from source, use ```lein run [page-number]```
+Run from source, use ```lein run [start-page count]```
 
 ```
-# Download page 1, page number starts from 1
-lein run 1
+# Download 5 pages, starting from page 5
+lein run 5 5
 # Or create runnable jar and execute
 lein uberjar
-java -jar ./target/oscnews-0.1.0-SNAPSHOT-standalone.jar [page-number]
+java -jar ./target/oscnews-0.1.0-SNAPSHOT-standalone.jar [start-page count]
 ```
 
 ## License

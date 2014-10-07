@@ -10,7 +10,9 @@
             [clojure.zip :as zip]
             [clojure.data.xml :as xml]
             [clojure.java.io :as io]
-            [clojure.string :as cstr]))
+            [clojure.string :as cstr])
+  (:import [java.util Date]
+           [java.text SimpleDateFormat]))
 
 ;; Utilility fn
 (defn zip-str
@@ -51,13 +53,13 @@
   [method]
   `(defn ~method
      ~(str "Issues an client/" method " request which is wrapped in a try-catch block."
-           "When 503 or 403 error occurs, will retry in 5 seconds")
+           "When 503,502 or 403 error occurs, will retry in 5 seconds")
      ~'[url params]
      (let [request# ~(symbol (str "client/" (clojure.string/lower-case method)))]
        (try
          (request# ~'url ~'params)
        (catch Exception e#
-         (if (contains? #{503 403} (get-status-by-exception e#))
+         (if (contains? #{503 403 502} (get-status-by-exception e#))
            (do
              (prn "Req rejected, sleep 5 secs")
              (Thread/sleep 5000)
@@ -67,6 +69,16 @@
 (def-httpmethod GET)
 (def-httpmethod POST)
 
+
+(defn wrap-ignore-exception
+  "Ignores any exception caused by calling the wrapped function."
+  [f]
+  (fn [& args]
+    (try
+      (apply f args)
+      (catch Exception e
+        (.printStackTrace e)
+        nil))))
 
 ;; uris
 (def osc-host
@@ -136,8 +148,9 @@
 ; newstype(0,1)-> catalog(1)
 ; newstype(3)-> catalog(3), url blogcomment_list
 (def osc-comments
-                                        ; need to append id and catalog
-  (str osc-host "/action/api/comment_list?pageIndex=0&pageSize=50&"))
+  ;; need to append id and catalog
+  ;;(str osc-host "/action/api/comment_list?pageIndex=0&pageSize=50&")
+  (str osc-host "/action/api/comment_list?"))
 
 
 (def request-headers
@@ -243,21 +256,23 @@
   (let [e (if (string? expected) (read-string expected) (str expected))]
     (some (partial = n) [expected e])))
 
-(defn get-comments
+(defn- get-comments-intern
   "Get osc comments by news id"
-  [{:keys [rid newstype id] :as news}]
+  [{:keys [rid newstype id page-index] :as news}]
   (let [; newstype 0 mapped to catalog 1
-        catalog (if (match-type newstype 0) 1 newstype)
-        comment-url (str osc-comments
-                         "id=" (or rid id)
-                         "&catalog=" catalog)
-        ; if catalog=3, change url
-        comment-url (if (match-type catalog 3)
-                      (cstr/replace comment-url "comment_list" "blogcomment_list")
-                      comment-url)
-        _ (prn "Req cmts:" comment-url)
-        response (:body (GET comment-url request-headers))
-        zipbody (zip-str  response)
+        catalog       (if (match-type newstype 0) 1 newstype)
+        comment-url   (str osc-comments
+                           "id=" (or rid id)
+                           "&catalog=" catalog
+                           "&pageIndex=" (or page-index 0)
+                           "&pageSize=20")
+                                        ; if catalog=3, change url
+        comment-url   (if (match-type catalog 3)
+                        (cstr/replace comment-url "comment_list" "blogcomment_list")
+                        comment-url)
+        _             (prn "Req cmts:" comment-url)
+        response      (:body (GET comment-url request-headers))
+        zipbody       (zip-str  response)
         ;; seq of comments. each comments is a vector
         comments-seq
         (doall
@@ -279,27 +294,11 @@
             (first (:content comment))}))]
     (doall
      (->> comments-maps
-          (partition 4 4)
+          (partition 3 3)
           reverse
           (map #(reduce merge %))))))
 
-(defn fetch-news-by-page
-  "Get this page of news. page starts from 0"
-  [page]
-  (doall
-   (for [news (get-newslist page)
-         :let [id (:id news)
-               body (get-news-detail id)
-               cmtCount (or (:commentCount news) "0")
-               _ (prn "Dl  " cmtCount "for news " id)
-               comments (if (> (read-string cmtCount) 0)
-                          (try
-                            (get-comments news)
-                            (catch Exception e
-                              (prn "Get comments failed for" id "with error" (.getMessage e))
-                              (Thread/sleep (* 2 1000))))
-                          (prn (str "No comments for " id)))]]
-     (assoc news :body body :comments comments))))
+(def get-comments (wrap-ignore-exception get-comments-intern))
 
 (defn fetch-news
   "Get news at this page, number starts with 1"
@@ -308,15 +307,17 @@
    (for [news (get-newslist (dec page))
          :let [id (:id news)
                body (get-news-detail news)
-               cmtCount (or (:commentCount news) "0")
-               comments (if (> (read-string cmtCount) 0)
-                          (get-comments news)
-                          (prn (str "No comments for " id)))]]
+               all-count (or (:commentCount news) "0")
+               max-page (when all-count
+                          (inc (int (/ (read-string all-count) 20))))
+               comments-by-page-reducer (fn [v page-index]
+                                          (concat (get-comments (assoc news :page-index page-index)) v))
+               comments (when all-count
+                          (reduce comments-by-page-reducer []  (range max-page)))]]
      (assoc news
        :body body
        :comments comments
-       :url (str osc-news-details id)
-       ))))
+       :url (str osc-news-details id)))))
 
 
 (defn convert-newslist
@@ -327,7 +328,10 @@
      [:h3 {:class "news-title"}
       [:a
        {:href (:url news)}
-       (:title news)]]
+       (:title news)]
+      [:br]
+      [:small
+       (:url news)]]
      [:div {:class "news-author"}
       (:author news)]
      [:div {:class "news-date"}
@@ -336,6 +340,14 @@
       (or (:body news) (:description news))
       [:span {:id (str "newsid" (:id news))
               :hidden "hidden"}]]
+     (if (seq (:comments news))
+       [:h4
+        [:a
+         {:href (:url news)}
+         (str (:title news) " - Comments ")]
+        [:br]
+        [:small
+         (:url news)]])
      (for [cmnt (:comments news)]
        [:div {:class "news-comments-list"}
         [:p
@@ -454,7 +466,9 @@ http://www.oschina.net/news/54237/chanzhieps-2-5"
            (if (and page (> page 0))
              (-fetch-news-as-html page)
              (-fetch-news-as-html 1)))
-          in (str "oscnews-" page "-" (System/currentTimeMillis) ".html" )]
+          in (str "oscnews-" page "-"
+                  (.format (SimpleDateFormat. "yyyyMMdd_HHmmssSSS")  (Date.))
+                  ".html" )]
       (spit in newshtml)
       (convert-to-epub in)))  )
 
@@ -466,10 +480,12 @@ http://www.oschina.net/news/54237/chanzhieps-2-5"
 
 (defn -main
   "Start downloading osc news pages"
-  [& [page]]
-  (let [page (or page 0)]
-    (prn "Downloading page" page)
-    (fetch-news-as-html page))
+  [start count]
+  (let [[start count] (map read-string [start count])]
+    (dotimes [i count]
+      (prn "Downloading page" (+ i start))
+      (fetch-news-as-html (+ i start))))
+
   (shutdown-agents))
 
 (comment
