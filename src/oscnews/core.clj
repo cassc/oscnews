@@ -1,18 +1,21 @@
 (ns oscnews.core
   (:gen-class)
-  (:use [hiccup.core]
-        [hickory.core :only [parse as-hickory as-hiccup parse-fragment]]
-        [hickory.zip :only [hickory-zip hiccup-zip]]
-        [hickory.convert :only [hickory-to-hiccup]]
-        [clojure.java.shell :only [sh]])
-  (:require [clj-http.client :as client]
-            [hickory.select :as s]
-            [clojure.zip :as zip]
-            [clojure.data.xml :as xml]
-            [clojure.java.io :as io]
-            [clojure.string :as cstr])
-  (:import [java.util Date]
-           [java.text SimpleDateFormat]))
+  (:use
+   [hiccup.core]
+   [hickory.core       :only [parse as-hickory as-hiccup parse-fragment]]
+   [hickory.zip        :only [hickory-zip hiccup-zip]]
+   [hickory.convert    :only [hickory-to-hiccup]]
+   [clojure.java.shell :only [sh]])
+  (:require
+   [org.httpkit.client :as client]
+   [hickory.select     :as s]
+   [clojure.zip        :as zip]
+   [clojure.data.xml   :as xml]
+   [clojure.java.io    :as io]
+   [clojure.string     :as cstr])
+  (:import
+   [java.util Date]
+   [java.text SimpleDateFormat]))
 
 ;; Utilility fn
 (defn zip-str
@@ -52,19 +55,11 @@
 (defmacro def-httpmethod
   [method]
   `(defn ~method
-     ~(str "Issues an client/" method " request which is wrapped in a try-catch block."
-           "When 503,502 or 403 error occurs, will retry in 5 seconds")
+     ~(str "Issues an client/" method " request."
+           "TODO When 503,502 or 403 error occurs, will retry in 5 seconds")
      ~'[url params]
      (let [request# ~(symbol (str "client/" (clojure.string/lower-case method)))]
-       (try
-         (request# ~'url ~'params)
-       (catch Exception e#
-         (if (contains? #{503 403 502} (get-status-by-exception e#))
-           (do
-             (prn "Req rejected, sleep 5 secs")
-             (Thread/sleep 5000)
-             (request# ~'url ~'params))
-           (throw e#)))))))
+       @(request# ~'url ~'params))))
 
 (def-httpmethod GET)
 (def-httpmethod POST)
@@ -88,7 +83,7 @@
   (str osc-host "/news/rss"))
 
 ;; Cookie store
-(def cs (clj-http.cookies/cookie-store))
+;; (def cs (clj-http.cookies/cookie-store))
 
 ;; 1 all, 2 integration, 3 software, 4 truely all
 ; http://www.oschina.net/action/api/news_list?catalog=0&pageIndex=0&pageSize=50
@@ -154,18 +149,31 @@
 
 
 (def request-headers
-  {:accept "application/xml"
-   :accept-language "zh-cn"
+  {:accept "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+   :accept-language "en-US,en;q=0.8,zh;q=0.6"
+   :accept-encoding "gzip"
+   :cache-control "no-cache"
    :host "www.oschina.net"
-   :user-agent "Mozilla/5.0 (X11; Linux i686; rv:30.0) Gecko/20100101 Firefox/30.0 Iceweasel/30.0"
-;   :cookie "oscid=hAVeMWBecfqVwnPrEC5fwXtoXjWkDMgEmp%2B6EtdV18KKY22xo%2F8UT8H2m2Feqf6yXw1jGPrKEK%2BH%2BIafyB8aBA6qQNsbOU3O9pjMTEgz21LXGpAZFNnFIjTEXOJ70Zi8"
-   :cookie (:cookie-store cs)
+   :pragma "no-cache"
+   :user-agent "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/41.0.2272.118 Safari/537.36"
+;;   :cookie (:cookie-store cs)
    :socket-timeout 10000
    :conn-timeout 5000
    :retry-handler (fn [ex try-count http-context]
                     (println "Got:" ex)
                     (if (> try-count 2) false true))})
 
+
+(def client-options
+  {:timeout 2000
+   :user-agent "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/41.0.2272.118 Safari/537.36"
+   :headers {"accept" "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+             "accept-language" "en-US,en;q=0.8,zh;q=0.6"
+             "accept-encoding" "gzip"
+             "cache-control" "no-cache"
+             "pragma" "no-cache"
+             "user-agent" "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/41.0.2272.118 Safari/537.36"
+}})
 
 (defn- get-attachement
   "Get redirect id from node "
@@ -211,12 +219,10 @@
    flatten
    identity
    (partition 6 6)
-   (map #(reduce merge %))
-   ))
+   (map #(reduce merge %))))
 
 (defn get-newslist [page]
-  (let [newslist (:body (GET (str osc-news-list page)
-                                    request-headers))
+  (let [newslist (:body (GET (str osc-news-list page) client-options))
         zipbody (zip-str newslist)]
     (parse-osc-news zipbody)))
 
@@ -229,8 +235,8 @@
         newsdetail-url (str (get-detail-url newstype) id)
         response (:body
                   (if (= "1" newstype) ; type 2, software should be requested with post
-                    (POST newsdetail-url (assoc request-headers :form-params {:ident id}))
-                    (GET newsdetail-url request-headers)))]
+                    (POST newsdetail-url (assoc client-options :form-params {:ident id}))
+                    (GET newsdetail-url client-options)))]
     response))
 
 
@@ -266,22 +272,19 @@
                            "&catalog=" catalog
                            "&pageIndex=" (or page-index 0)
                            "&pageSize=20")
-                                        ; if catalog=3, change url
+        ;; if catalog=3, change url
         comment-url   (if (match-type catalog 3)
                         (cstr/replace comment-url "comment_list" "blogcomment_list")
                         comment-url)
         _             (prn "Req cmts:" comment-url)
-        response      (:body (GET comment-url request-headers))
+        response      (:body (GET comment-url client-options))
         zipbody       (zip-str  response)
         ;; seq of comments. each comments is a vector
         comments-seq
         (doall
-         (for [c (->> zipbody
-                      first
-                      :content)
+         (for [c (->> zipbody first :content)
                :when (= :comments (:tag c))
-               :let [cmnts (->> c
-                                :content)]]
+               :let [cmnts (->> c :content)]]
            (map :content cmnts)))
         ;; seq of map of comments
         comments-maps
@@ -377,7 +380,7 @@ TODO Handle 503 or service rejected"
   ([]
      (-fetch-news-as-html 1))
   ([page]
-     (let [_ (GET osc-host request-headers)
+     (let [_ (GET osc-host client-options)
            newslist (fetch-news page)]
        (news-base-html newslist))))
 
@@ -402,9 +405,10 @@ http://www.oschina.net/news/54237/chanzhieps-2-5"
     (if-not (.exists (io/file output))
       (let [_ (io/make-parents output)
             body (:body
-                  (GET url (assoc request-headers :as :byte-array)))]
-        (with-open [w (io/output-stream output)]
-          (io/copy body w))))))
+                  (GET url (assoc client-options :as :byte-array)))]
+        (when body
+          (with-open [w (io/output-stream output)]
+            (io/copy body w)))))))
 
 (defn replace-image-node
   [node]

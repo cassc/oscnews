@@ -1,4 +1,5 @@
-*.mp3
+*.html
+*.epub
 config.edn
 /target
 /lib
