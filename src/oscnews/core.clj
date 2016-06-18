@@ -58,7 +58,9 @@
      ~(str "Issues an client/" method " request."
            "TODO When 503,502 or 403 error occurs, will retry in 5 seconds")
      ~'[url params]
+     (Thread/sleep 500) ;; sleep a while to reduce request frequency
      (let [request# ~(symbol (str "client/" (clojure.string/lower-case method)))]
+       (prn ~'url ~'params)
        @(request# ~'url ~'params))))
 
 (def-httpmethod GET)
@@ -81,9 +83,6 @@
 
 (def osc-rss
   (str osc-host "/news/rss"))
-
-;; Cookie store
-;; (def cs (clj-http.cookies/cookie-store))
 
 ;; 1 all, 2 integration, 3 software, 4 truely all
 ; http://www.oschina.net/action/api/news_list?catalog=0&pageIndex=0&pageSize=50
@@ -148,31 +147,16 @@
   (str osc-host "/action/api/comment_list?"))
 
 
-(def request-headers
-  {:accept "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
-   :accept-language "en-US,en;q=0.8,zh;q=0.6"
-   :accept-encoding "gzip"
-   :cache-control "no-cache"
-   :host "www.oschina.net"
-   :pragma "no-cache"
-   :user-agent "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/41.0.2272.118 Safari/537.36"
-;;   :cookie (:cookie-store cs)
-   :socket-timeout 10000
-   :conn-timeout 5000
-   :retry-handler (fn [ex try-count http-context]
-                    (println "Got:" ex)
-                    (if (> try-count 2) false true))})
-
-
 (def client-options
   {:timeout 2000
-   :user-agent "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/41.0.2272.118 Safari/537.36"
+   :follow-redirects false
    :headers {"accept" "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
              "accept-language" "en-US,en;q=0.8,zh;q=0.6"
              "accept-encoding" "gzip"
              "cache-control" "no-cache"
+             "https" "1"
              "pragma" "no-cache"
-             "user-agent" "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/41.0.2272.118 Safari/537.36"
+             "user-agent" "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/44.0.2403.89 Safari/537.36"
 }})
 
 (defn- get-attachement
